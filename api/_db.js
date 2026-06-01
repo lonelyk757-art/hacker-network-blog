@@ -1,118 +1,154 @@
 /**
- * Database Helper Module
- * Handles all database operations for serverless functions
- * Uses Supabase PostgreSQL
+ * Firebase Firestore Database Helper
+ * Replaces PostgreSQL with Firebase Firestore
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 
-let supabase = null;
+// Initialize Firebase Admin
+let db = null;
 
 function getDb() {
-  if (!supabase) {
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_KEY;
-    
-    if (!url || !key) {
-      throw new Error('Missing Supabase credentials');
+  if (!db) {
+    try {
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
+      
+      if (!serviceAccount.project_id) {
+        throw new Error('Missing Firebase credentials');
+      }
+
+      const app = initializeApp({
+        credential: cert(serviceAccount),
+      });
+
+      db = getFirestore(app);
+    } catch (error) {
+      console.error('Firebase initialization error:', error);
+      throw error;
     }
-    
-    supabase = createClient(url, key);
   }
-  return supabase;
+  return db;
 }
+
+// Collections
+const USERS = 'users';
+const POSTS = 'posts';
+const COMMENTS = 'comments';
 
 // ============================================
 // USERS
 // ============================================
 
 export async function createUser(email, passwordHash, username) {
-  const db = getDb();
-  
-  const { data, error } = await db
-    .from('users')
-    .insert([
-      {
-        email,
-        password_hash: passwordHash,
-        username,
-        credits: 300,
-        role: 'user',
-        created_at: new Date().toISOString(),
-      },
-    ])
-    .select()
-    .single();
+  try {
+    const database = getDb();
+    const userRef = database.collection(USERS).doc(email);
 
-  if (error) throw error;
-  return data;
+    const userData = {
+      email,
+      passwordHash,
+      username,
+      credits: 300,
+      role: 'user',
+      verified: false,
+      followers: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    await userRef.set(userData);
+    return { id: email, ...userData };
+  } catch (error) {
+    console.error('Create user error:', error);
+    throw error;
+  }
 }
 
 export async function getUserByEmail(email) {
-  const db = getDb();
-  
-  const { data, error } = await db
-    .from('users')
-    .select('*')
-    .eq('email', email)
-    .single();
+  try {
+    const database = getDb();
+    const doc = await database.collection(USERS).doc(email).get();
 
-  if (error && error.code !== 'PGRST116') throw error;
-  return data || null;
+    if (!doc.exists) return null;
+    return { id: doc.id, ...doc.data() };
+  } catch (error) {
+    console.error('Get user error:', error);
+    throw error;
+  }
 }
 
-export async function getUserById(id) {
-  const db = getDb();
-  
-  const { data, error } = await db
-    .from('users')
-    .select('*')
-    .eq('id', id)
-    .single();
+export async function getUserById(userId) {
+  try {
+    const database = getDb();
+    const doc = await database.collection(USERS).doc(userId).get();
 
-  if (error && error.code !== 'PGRST116') throw error;
-  return data || null;
+    if (!doc.exists) return null;
+    return { id: doc.id, ...doc.data() };
+  } catch (error) {
+    console.error('Get user by ID error:', error);
+    throw error;
+  }
 }
 
 export async function updateUserCredits(userId, amount) {
-  const db = getDb();
-  
-  const user = await getUserById(userId);
-  if (!user) throw new Error('User not found');
+  try {
+    const database = getDb();
+    const userRef = database.collection(USERS).doc(userId);
+    const doc = await userRef.get();
 
-  const newCredits = Math.max(0, user.credits + amount);
-  
-  const { data, error } = await db
-    .from('users')
-    .update({ credits: newCredits })
-    .eq('id', userId)
-    .select()
-    .single();
+    if (!doc.exists) throw new Error('User not found');
 
-  if (error) throw error;
-  return data;
+    const currentCredits = doc.data().credits || 0;
+    const newCredits = Math.max(0, currentCredits + amount);
+
+    await userRef.update({
+      credits: newCredits,
+      updatedAt: new Date(),
+    });
+
+    return { ...doc.data(), credits: newCredits, id: userId };
+  } catch (error) {
+    console.error('Update credits error:', error);
+    throw error;
+  }
+}
+
+export async function updateUserVerification(userId, verified, followers = 0) {
+  try {
+    const database = getDb();
+    await database.collection(USERS).doc(userId).update({
+      verified,
+      followers,
+      updatedAt: new Date(),
+    });
+    return true;
+  } catch (error) {
+    console.error('Update verification error:', error);
+    throw error;
+  }
 }
 
 export async function getAllUsers() {
-  const db = getDb();
-  
-  const { data, error } = await db
-    .from('users')
-    .select('id, email, username, credits, role, created_at');
-
-  if (error) throw error;
-  return data || [];
+  try {
+    const database = getDb();
+    const snapshot = await database.collection(USERS).get();
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  } catch (error) {
+    console.error('Get all users error:', error);
+    throw error;
+  }
 }
 
 export async function deleteUser(userId) {
-  const db = getDb();
-  
-  const { error } = await db
-    .from('users')
-    .delete()
-    .eq('id', userId);
-
-  if (error) throw error;
+  try {
+    const database = getDb();
+    await database.collection(USERS).doc(userId).delete();
+    return true;
+  } catch (error) {
+    console.error('Delete user error:', error);
+    throw error;
+  }
 }
 
 // ============================================
@@ -120,115 +156,163 @@ export async function deleteUser(userId) {
 // ============================================
 
 export async function createPost(userId, title, content, type, tags, imageUrl = null) {
-  const db = getDb();
-  
-  const { data, error } = await db
-    .from('posts')
-    .insert([
-      {
-        user_id: userId,
-        title,
-        content,
-        type, // 'news', 'blog', 'image'
-        tags: tags.join(','),
-        image_url: imageUrl,
-        likes: 0,
-        created_at: new Date().toISOString(),
-      },
-    ])
-    .select()
-    .single();
+  try {
+    const database = getDb();
+    const postRef = database.collection(POSTS).doc();
 
-  if (error) throw error;
-  return data;
+    const postData = {
+      userId,
+      title,
+      content,
+      type, // 'news', 'blog', 'image'
+      tags: Array.isArray(tags) ? tags : tags.split(',').map(t => t.trim()),
+      imageUrl: imageUrl || null,
+      likes: 0,
+      likedBy: [],
+      commentCount: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    await postRef.set(postData);
+    return { id: postRef.id, ...postData };
+  } catch (error) {
+    console.error('Create post error:', error);
+    throw error;
+  }
 }
 
-export async function getPostById(id) {
-  const db = getDb();
-  
-  const { data, error } = await db
-    .from('posts')
-    .select(`
-      *,
-      users:user_id (id, username, email),
-      comments (id, content, user_id, created_at, users:user_id (username))
-    `)
-    .eq('id', id)
-    .single();
+export async function getPostById(postId) {
+  try {
+    const database = getDb();
+    const doc = await database.collection(POSTS).doc(postId).get();
 
-  if (error && error.code !== 'PGRST116') throw error;
-  return data || null;
+    if (!doc.exists) return null;
+
+    const postData = { id: doc.id, ...doc.data() };
+
+    // Get user info
+    const userDoc = await database.collection(USERS).doc(postData.userId).get();
+    if (userDoc.exists) {
+      postData.users = { id: userDoc.id, ...userDoc.data() };
+    }
+
+    return postData;
+  } catch (error) {
+    console.error('Get post error:', error);
+    throw error;
+  }
 }
 
 export async function getPosts(filters = {}) {
-  const db = getDb();
-  
-  let query = db
-    .from('posts')
-    .select(`
-      *,
-      users:user_id (id, username, email)
-    `)
-    .order('created_at', { ascending: false });
+  try {
+    const database = getDb();
+    let query = database.collection(POSTS);
 
-  if (filters.type) {
-    query = query.eq('type', filters.type);
+    if (filters.type) {
+      query = query.where('type', '==', filters.type);
+    }
+
+    if (filters.userId) {
+      query = query.where('userId', '==', filters.userId);
+    }
+
+    const snapshot = await query
+      .orderBy('createdAt', 'desc')
+      .limit(filters.limit || 50)
+      .get();
+
+    const posts = [];
+    for (const doc of snapshot.docs) {
+      const postData = { id: doc.id, ...doc.data() };
+
+      // Get user info
+      const userDoc = await database.collection(USERS).doc(postData.userId).get();
+      if (userDoc.exists) {
+        postData.users = { id: userDoc.id, ...userDoc.data() };
+      }
+
+      posts.push(postData);
+    }
+
+    return posts;
+  } catch (error) {
+    console.error('Get posts error:', error);
+    throw error;
   }
-
-  if (filters.tag) {
-    query = query.ilike('tags', `%${filters.tag}%`);
-  }
-
-  if (filters.userId) {
-    query = query.eq('user_id', filters.userId);
-  }
-
-  const { data, error } = await query.limit(filters.limit || 50);
-
-  if (error) throw error;
-  return data || [];
 }
 
 export async function updatePost(postId, updates) {
-  const db = getDb();
-  
-  const { data, error } = await db
-    .from('posts')
-    .update(updates)
-    .eq('id', postId)
-    .select()
-    .single();
+  try {
+    const database = getDb();
+    const postRef = database.collection(POSTS).doc(postId);
 
-  if (error) throw error;
-  return data;
+    await postRef.update({
+      ...updates,
+      updatedAt: new Date(),
+    });
+
+    const doc = await postRef.get();
+    return { id: doc.id, ...doc.data() };
+  } catch (error) {
+    console.error('Update post error:', error);
+    throw error;
+  }
 }
 
 export async function deletePost(postId) {
-  const db = getDb();
-  
-  const { error } = await db
-    .from('posts')
-    .delete()
-    .eq('id', postId);
+  try {
+    const database = getDb();
 
-  if (error) throw error;
+    // Delete post
+    await database.collection(POSTS).doc(postId).delete();
+
+    // Delete associated comments
+    const commentsSnapshot = await database
+      .collection(COMMENTS)
+      .where('postId', '==', postId)
+      .get();
+
+    for (const doc of commentsSnapshot.docs) {
+      await doc.ref.delete();
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Delete post error:', error);
+    throw error;
+  }
 }
 
-export async function likePost(postId) {
-  const db = getDb();
-  
-  const post = await getPostById(postId);
-  if (!post) throw new Error('Post not found');
+export async function likePost(postId, userId) {
+  try {
+    const database = getDb();
+    const postRef = database.collection(POSTS).doc(postId);
+    const doc = await postRef.get();
 
-  const { data, error } = await db
-    .from('posts')
-    .update({ likes: post.likes + 1 })
-    .eq('id', postId)
-    .select()
-    .single();
+    if (!doc.exists) throw new Error('Post not found');
 
-  if (error) throw error;
-  return data;
+    const postData = doc.data();
+    const likedBy = postData.likedBy || [];
+
+    // Toggle like
+    if (likedBy.includes(userId)) {
+      likedBy.splice(likedBy.indexOf(userId), 1);
+    } else {
+      likedBy.push(userId);
+    }
+
+    await postRef.update({
+      likes: likedBy.length,
+      likedBy,
+      updatedAt: new Date(),
+    });
+
+    return { ...postData, likes: likedBy.length, id: postId };
+  } catch (error) {
+    console.error('Like post error:', error);
+    throw error;
+  }
 }
 
 // ============================================
@@ -236,50 +320,84 @@ export async function likePost(postId) {
 // ============================================
 
 export async function addComment(postId, userId, content) {
-  const db = getDb();
-  
-  const { data, error } = await db
-    .from('comments')
-    .insert([
-      {
-        post_id: postId,
-        user_id: userId,
-        content,
-        created_at: new Date().toISOString(),
-      },
-    ])
-    .select()
-    .single();
+  try {
+    const database = getDb();
+    const commentRef = database.collection(COMMENTS).doc();
 
-  if (error) throw error;
-  return data;
+    const commentData = {
+      postId,
+      userId,
+      content,
+      createdAt: new Date(),
+    };
+
+    await commentRef.set(commentData);
+
+    // Update post comment count
+    const postRef = database.collection(POSTS).doc(postId);
+    const postDoc = await postRef.get();
+    if (postDoc.exists) {
+      await postRef.update({
+        commentCount: (postDoc.data().commentCount || 0) + 1,
+      });
+    }
+
+    return { id: commentRef.id, ...commentData };
+  } catch (error) {
+    console.error('Add comment error:', error);
+    throw error;
+  }
 }
 
 export async function getComments(postId) {
-  const db = getDb();
-  
-  const { data, error } = await db
-    .from('comments')
-    .select(`
-      *,
-      users:user_id (id, username, email)
-    `)
-    .eq('post_id', postId)
-    .order('created_at', { ascending: true });
+  try {
+    const database = getDb();
+    const snapshot = await database
+      .collection(COMMENTS)
+      .where('postId', '==', postId)
+      .orderBy('createdAt', 'asc')
+      .get();
 
-  if (error) throw error;
-  return data || [];
+    const comments = [];
+    for (const doc of snapshot.docs) {
+      const commentData = { id: doc.id, ...doc.data() };
+
+      // Get user info
+      const userDoc = await database.collection(USERS).doc(commentData.userId).get();
+      if (userDoc.exists) {
+        commentData.users = { id: userDoc.id, ...userDoc.data() };
+      }
+
+      comments.push(commentData);
+    }
+
+    return comments;
+  } catch (error) {
+    console.error('Get comments error:', error);
+    throw error;
+  }
 }
 
-export async function deleteComment(commentId) {
-  const db = getDb();
-  
-  const { error } = await db
-    .from('comments')
-    .delete()
-    .eq('id', commentId);
+export async function deleteComment(commentId, postId) {
+  try {
+    const database = getDb();
 
-  if (error) throw error;
+    await database.collection(COMMENTS).doc(commentId).delete();
+
+    // Update post comment count
+    const postRef = database.collection(POSTS).doc(postId);
+    const postDoc = await postRef.get();
+    if (postDoc.exists) {
+      await postRef.update({
+        commentCount: Math.max(0, (postDoc.data().commentCount || 1) - 1),
+      });
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Delete comment error:', error);
+    throw error;
+  }
 }
 
 // ============================================
@@ -287,30 +405,26 @@ export async function deleteComment(commentId) {
 // ============================================
 
 export async function getStats() {
-  const db = getDb();
-  
-  const { count: userCount } = await db
-    .from('users')
-    .select('*', { count: 'exact', head: true });
+  try {
+    const database = getDb();
 
-  const { count: postCount } = await db
-    .from('posts')
-    .select('*', { count: 'exact', head: true });
+    const usersSnapshot = await database.collection(USERS).get();
+    const postsSnapshot = await database.collection(POSTS).get();
+    const commentsSnapshot = await database.collection(COMMENTS).get();
 
-  const { count: commentCount } = await db
-    .from('comments')
-    .select('*', { count: 'exact', head: true });
+    let totalLikes = 0;
+    postsSnapshot.forEach(doc => {
+      totalLikes += doc.data().likes || 0;
+    });
 
-  const { data: postData } = await db
-    .from('posts')
-    .select('likes');
-
-  const totalLikes = (postData || []).reduce((sum, post) => sum + (post.likes || 0), 0);
-
-  return {
-    users: userCount || 0,
-    posts: postCount || 0,
-    comments: commentCount || 0,
-    likes: totalLikes,
-  };
+    return {
+      users: usersSnapshot.size,
+      posts: postsSnapshot.size,
+      comments: commentsSnapshot.size,
+      likes: totalLikes,
+    };
+  } catch (error) {
+    console.error('Get stats error:', error);
+    throw error;
+  }
 }
