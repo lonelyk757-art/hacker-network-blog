@@ -3,7 +3,7 @@
   "buildCommand": "echo 'Static site'",
   "outputDirectory": "public",
   "env": [
-    "DATABASE_URL",
+    "",
     "JWT_SECRET",
     "ADMIN_PASSWORD_HASH",
     "STORAGE_API_KEY",
